@@ -456,4 +456,106 @@ void* Heap::reallocate(void* p, std::size_t n) {
   return reallocate_unlocked(p, n);
 }
 
+// ---------------------------------------------------------------------------
+// realloc: shrink in place, grow into a free successor, or move
+// ---------------------------------------------------------------------------
+
+void* Heap::reallocate_unlocked(void* p, std::size_t n) {
+  if (p == nullptr) return allocate_unlocked(n);
+  if (n == 0) {
+    deallocate_unlocked(p);
+    return nullptr;
+  }
+  if (n > kMaxRequest) {
+    ++stats_.failed_allocs;
+    return nullptr;
+  }
+
+  BlockHeader* b = from_payload(p);
+  if (b->magic != kMagic || !is_in_use(b)) os::fatal("realloc(): invalid pointer");
+  if (b->arena_id != id_) os::fatal("realloc(): pointer belongs to a different arena");
+
+  const std::size_t cur = block_size(b);
+  const std::size_t cur_usable = cur - kHeaderSize;
+
+  if (is_mmapped(b)) {
+    // Keep the mapping if the new size still uses at least half of it.
+    if (n <= cur_usable && n >= cur_usable / 2) return p;
+    void* q = allocate_unlocked(n);
+    if (q == nullptr) return nullptr;
+    std::memcpy(q, p, n < cur_usable ? n : cur_usable);
+    deallocate_unlocked(p);
+    return q;
+  }
+
+  const std::size_t bs = request_to_block(n);
+  if (bs <= cur) {
+    split_tail(b, bs);
+    return p;
+  }
+
+  BlockHeader* next = next_block(b);
+  if (!is_in_use(next) && cur + block_size(next) >= bs) {
+    remove_free(next);
+    const std::size_t total = cur + block_size(next);
+    const std::uint64_t prev_flag = b->size_flags & kPrevInUse;
+    set_header(b, total, kInUse | prev_flag);
+    next_block(b)->size_flags |= kPrevInUse;
+    stats_.in_use_bytes += total - cur;
+    split_tail(b, bs);
+    return p;
+  }
+
+  void* q = allocate_unlocked(n);
+  if (q == nullptr) return nullptr;
+  std::memcpy(q, p, cur_usable);
+  deallocate_unlocked(p);
+  return q;
+}
+
+// ---------------------------------------------------------------------------
+// Aligned allocation: over-allocate, then free the misaligned lead and the
+// unused tail back into the bins.
+// ---------------------------------------------------------------------------
+
+void* Heap::allocate_aligned_unlocked(std::size_t alignment, std::size_t n) {
+  if (!is_power_of_two(alignment)) {
+    ++stats_.failed_allocs;
+    return nullptr;
+  }
+  if (alignment <= kAlign) return allocate_unlocked(n);
+  if (n > kMaxRequest - alignment - 2 * kMinBlock) {
+    ++stats_.failed_allocs;
+    return nullptr;
+  }
+
+  const std::size_t padded = n + alignment + 2 * kMinBlock;
+  if (owns_memory_ && request_to_block(padded) >= cfg_.mmap_threshold) {
+    return allocate_mmapped(n, alignment);
+  }
+
+  void* p = allocate_unlocked(padded);
+  if (p == nullptr) return nullptr;
+  BlockHeader* b = from_payload(p);
+  const std::size_t want = request_to_block(n);
+
+  if (addr(p) % alignment == 0) {
+    split_tail(b, want);
+    return p;
+  }
+
+  // Leave at least kMinBlock in front so the lead can stand alone as a free block.
+  const std::uintptr_t aligned = align_up(addr(p) + kMinBlock, alignment);
+  auto* nb = reinterpret_cast<BlockHeader*>(aligned - kHeaderSize);
+  const std::size_t lead = static_cast<std::size_t>(addr(nb) - addr(b));
+  const std::size_t total = block_size(b);
+  const std::uint64_t prev_flag = b->size_flags & kPrevInUse;
+
+  set_header(nb, total - lead, kInUse);  // its predecessor (the lead) is about to be freed
+  set_header(b, lead, kInUse | prev_flag);
+  release_block(b);
+  split_tail(nb, want);
+  return payload(nb);
+}
+
 }  // namespace arena
