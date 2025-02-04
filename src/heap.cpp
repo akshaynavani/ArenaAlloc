@@ -421,4 +421,39 @@ bool Heap::validate(std::string* err) const {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Thread-safe public entry points
+// ---------------------------------------------------------------------------
+
+void* Heap::allocate(std::size_t n) {
+  std::lock_guard<std::mutex> lock(mu_);
+  return allocate_unlocked(n);
+}
+
+void* Heap::try_allocate(std::size_t n, bool* contended) {
+  std::unique_lock<std::mutex> lock(mu_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    *contended = true;
+    return nullptr;
+  }
+  *contended = false;
+  return allocate_unlocked(n);
+}
+
+void Heap::deallocate(void* p) {
+  if (p == nullptr) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  deallocate_unlocked(p);
+}
+
+void* Heap::allocate_aligned(std::size_t alignment, std::size_t n) {
+  std::lock_guard<std::mutex> lock(mu_);
+  return allocate_aligned_unlocked(alignment, n);
+}
+
+void* Heap::reallocate(void* p, std::size_t n) {
+  std::lock_guard<std::mutex> lock(mu_);
+  return reallocate_unlocked(p, n);
+}
+
 }  // namespace arena
