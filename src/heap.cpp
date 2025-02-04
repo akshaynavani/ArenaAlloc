@@ -205,4 +205,117 @@ void* Heap::allocate_unlocked(std::size_t n) {
   return payload(b);
 }
 
+// ---------------------------------------------------------------------------
+// Free / coalescing
+// ---------------------------------------------------------------------------
+
+// Turns an in-use block into a free one, merging it with free neighbours on both
+// sides (boundary tags), then either hands the chunk back to the OS or bins it.
+void Heap::release_block(BlockHeader* b) {
+  std::size_t size = block_size(b);
+  stats_.in_use_bytes -= size;
+
+  BlockHeader* next = next_block(b);
+  if (!is_in_use(next)) {
+    remove_free(next);
+    size += block_size(next);
+  }
+  if (!is_prev_in_use(b)) {
+    BlockHeader* prev = prev_block(b);
+    remove_free(prev);
+    size += block_size(prev);
+    b = prev;
+  }
+
+  // Whatever precedes the merged block is in use (otherwise it would have merged).
+  set_header(b, size, kPrevInUse);
+  write_footer(b);
+  next_block(b)->size_flags &= ~kPrevInUse;
+
+  if (try_release_chunk(b)) return;
+  insert_free(b);
+}
+
+// If `b` (free, unbinned) now spans an entire chunk, unmap that chunk. One chunk is
+// always kept so a steady alloc/free loop doesn't thrash mmap.
+bool Heap::try_release_chunk(BlockHeader* b) {
+  if (!owns_memory_ || !cfg_.release_empty_chunks || stats_.num_chunks <= 1) return false;
+  if (block_size(next_block(b)) != 0) return false;  // next is not the epilogue
+
+  auto* candidate = reinterpret_cast<ChunkHeader*>(reinterpret_cast<char*>(b) - kChunkHeaderSize);
+  ChunkHeader** link = &chunks_;
+  while (*link != nullptr && *link != candidate) link = &(*link)->next;
+  if (*link == nullptr) return false;  // b is not the first block of a chunk
+
+  *link = candidate->next;
+  --stats_.num_chunks;
+  const std::size_t len = candidate->size;
+  note_footprint_change(-static_cast<std::ptrdiff_t>(len));
+  os::unmap_pages(candidate, len);
+  return true;
+}
+
+void Heap::deallocate_unlocked(void* p) {
+  if (p == nullptr) return;
+  BlockHeader* b = from_payload(p);
+  if (b->magic != kMagic) os::fatal("free(): invalid pointer (bad magic)");
+  if (!is_in_use(b)) os::fatal("free(): double free detected");
+  if (b->arena_id != id_) os::fatal("free(): pointer belongs to a different arena");
+
+  ++stats_.free_count;
+  if (is_mmapped(b)) {
+    free_mmapped(b);
+  } else {
+    release_block(b);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Direct-mmap large blocks
+//
+//   base: [map_len 8B][....][offset 8B][header 16B][payload ...]
+//                                       ^ base + offset
+// ---------------------------------------------------------------------------
+
+void* Heap::allocate_mmapped(std::size_t n, std::size_t alignment) {
+  const std::size_t a = alignment < kAlign ? kAlign : alignment;
+  if (n > kMaxRequest) {
+    ++stats_.failed_allocs;
+    return nullptr;
+  }
+  const std::size_t len = align_up(n + 2 * kAlign + a, os::page_size());
+  if (cfg_.max_footprint != 0 && stats_.footprint + len > cfg_.max_footprint) {
+    ++stats_.failed_allocs;
+    return nullptr;
+  }
+  void* base = os::map_pages(len);
+  if (base == nullptr) {
+    ++stats_.failed_allocs;
+    return nullptr;
+  }
+
+  const std::uintptr_t user = align_up(addr(base) + 2 * kAlign, a);
+  auto* b = reinterpret_cast<BlockHeader*>(user - kHeaderSize);
+  const std::size_t off = static_cast<std::size_t>(addr(b) - addr(base));
+  *static_cast<std::uint64_t*>(base) = len;
+  *(reinterpret_cast<std::uint64_t*>(b) - 1) = off;
+  set_header(b, addr(base) + len - addr(b), kInUse | kPrevInUse | kMmapped);
+
+  stats_.in_use_bytes += block_size(b);
+  stats_.mmapped_bytes += len;
+  note_footprint_change(static_cast<std::ptrdiff_t>(len));
+  ++stats_.alloc_count;
+  return payload(b);
+}
+
+void Heap::free_mmapped(BlockHeader* b) {
+  const std::uint64_t off = *(reinterpret_cast<std::uint64_t*>(b) - 1);
+  char* base = reinterpret_cast<char*>(b) - off;
+  const std::size_t len = *reinterpret_cast<std::uint64_t*>(base);
+  stats_.in_use_bytes -= block_size(b);
+  stats_.mmapped_bytes -= len;
+  note_footprint_change(-static_cast<std::ptrdiff_t>(len));
+  os::unmap_pages(base, len);
+}
+
 }  // namespace arena
