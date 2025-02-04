@@ -318,4 +318,107 @@ void Heap::free_mmapped(BlockHeader* b) {
   os::unmap_pages(base, len);
 }
 
+// ---------------------------------------------------------------------------
+// Introspection
+// ---------------------------------------------------------------------------
+
+std::size_t Heap::usable_size(const void* p) {
+  if (p == nullptr) return 0;
+  const BlockHeader* b = from_payload(p);
+  if (b->magic != kMagic) os::fatal("usable_size(): invalid pointer");
+  return block_size(b) - kHeaderSize;
+}
+
+std::uint32_t Heap::owner_of(const void* p) {
+  const BlockHeader* b = from_payload(p);
+  if (b->magic != kMagic) os::fatal("free(): invalid pointer (bad magic)");
+  return b->arena_id;
+}
+
+bool Heap::is_mmapped_ptr(const void* p) { return p != nullptr && is_mmapped(from_payload(p)); }
+
+HeapStats Heap::stats() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  HeapStats s = stats_;
+  s.largest_free_block = 0;
+  const std::size_t top = bitmap_.find_last();
+  if (top < kNumBins) {
+    for (BlockHeader* b = bins_[top]; b != nullptr; b = links(b)->next) {
+      if (block_size(b) > s.largest_free_block) s.largest_free_block = block_size(b);
+    }
+  }
+  return s;
+}
+
+bool Heap::validate(std::string* err) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto fail = [err](const char* msg) {
+    if (err != nullptr) *err = msg;
+    return false;
+  };
+
+  std::size_t free_blocks = 0;
+  std::size_t free_bytes = 0;
+  std::size_t chunk_in_use = 0;
+  std::size_t chunk_count = 0;
+
+  for (const ChunkHeader* c = chunks_; c != nullptr; c = c->next) {
+    ++chunk_count;
+    const char* end = reinterpret_cast<const char*>(c) + c->size - kEpilogueSize;
+    auto* b = reinterpret_cast<const BlockHeader*>(reinterpret_cast<const char*>(c) +
+                                                   kChunkHeaderSize);
+    if (!is_prev_in_use(b)) return fail("first block of a chunk lacks PREV_INUSE");
+
+    bool prev_used = true;
+    while (reinterpret_cast<const char*>(b) < end) {
+      if (b->magic != kMagic) return fail("block with bad magic");
+      if (b->arena_id != id_) return fail("block with foreign arena id");
+      const std::size_t sz = block_size(b);
+      if (sz < kMinBlock || sz % kAlign != 0) return fail("block with invalid size");
+      if (reinterpret_cast<const char*>(b) + sz > end) return fail("block overruns its chunk");
+      if (is_prev_in_use(b) != prev_used) return fail("PREV_INUSE flag out of sync");
+      if (is_mmapped(b)) return fail("mmapped flag on a chunk block");
+
+      if (is_in_use(b)) {
+        chunk_in_use += sz;
+      } else {
+        if (!prev_used) return fail("two adjacent free blocks (missed coalesce)");
+        if (*footer(b) != sz) return fail("free block footer mismatch");
+        ++free_blocks;
+        free_bytes += sz;
+      }
+      prev_used = is_in_use(b);
+      b = next_block(b);
+    }
+    if (reinterpret_cast<const char*>(b) != end) return fail("chunk walk missed the epilogue");
+    if (block_size(b) != 0 || !is_in_use(b)) return fail("corrupt epilogue");
+    if (is_prev_in_use(b) != prev_used) return fail("epilogue PREV_INUSE out of sync");
+  }
+  if (chunk_count != stats_.num_chunks) return fail("chunk count mismatch");
+
+  std::size_t binned_blocks = 0;
+  std::size_t binned_bytes = 0;
+  for (std::size_t i = 0; i < kNumBins; ++i) {
+    if ((bins_[i] != nullptr) != bitmap_.test(i)) return fail("bitmap disagrees with bin");
+    const BlockHeader* prev = nullptr;
+    for (const BlockHeader* b = bins_[i]; b != nullptr; b = links(b)->next) {
+      if (is_in_use(b)) return fail("in-use block on a free list");
+      if (bin_index(block_size(b)) != i) return fail("block in the wrong bin");
+      if (links(b)->prev != prev) return fail("broken free-list back link");
+      if (++binned_blocks > free_blocks) return fail("free list has stray or cyclic entries");
+      binned_bytes += block_size(b);
+      prev = b;
+    }
+  }
+  if (binned_blocks != free_blocks) return fail("free block missing from bins");
+  if (binned_bytes != free_bytes || stats_.free_bytes != free_bytes) {
+    return fail("free byte accounting mismatch");
+  }
+  if (stats_.in_use_bytes < chunk_in_use ||
+      stats_.in_use_bytes - chunk_in_use > stats_.mmapped_bytes) {
+    return fail("in-use byte accounting mismatch");
+  }
+  return true;
+}
+
 }  // namespace arena
