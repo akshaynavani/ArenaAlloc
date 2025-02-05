@@ -19,6 +19,7 @@ add_library(arenaalloc STATIC
   src/os_memory.cpp
   src/heap.cpp
   src/arena_pool.cpp
+  src/c_api.cpp
 )
 target_include_directories(arenaalloc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(arenaalloc PUBLIC Threads::Threads)
