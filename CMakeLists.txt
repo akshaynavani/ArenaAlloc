@@ -33,3 +33,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # The C++ runtime must be linked in; exceptions are never thrown on the hot path.
   set_target_properties(arenaalloc_preload PROPERTIES LINKER_LANGUAGE CXX)
 endif()
+
+if(ARENAALLOC_BUILD_TESTS)
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
