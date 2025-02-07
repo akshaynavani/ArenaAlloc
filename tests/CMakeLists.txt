@@ -6,6 +6,8 @@ set(ARENAALLOC_TEST_SOURCES
   test_coalesce.cpp
   test_realloc_aligned.cpp
   test_fixed_buffer.cpp
+  test_pool_threads.cpp
+  test_c_api.cpp
 )
 
 add_executable(arenaalloc_tests ${ARENAALLOC_TEST_SOURCES})
