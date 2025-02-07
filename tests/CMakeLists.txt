@@ -2,6 +2,7 @@ include(GoogleTest)
 
 set(ARENAALLOC_TEST_SOURCES
   test_size_class.cpp
+  test_heap_basic.cpp
 )
 
 add_executable(arenaalloc_tests ${ARENAALLOC_TEST_SOURCES})
