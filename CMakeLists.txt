@@ -47,3 +47,12 @@ if(ARENAALLOC_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+if(ARENAALLOC_BUILD_BENCH)
+  add_library(arenaalloc_bench_common STATIC bench/workloads.cpp)
+  target_include_directories(arenaalloc_bench_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/bench)
+  target_link_libraries(arenaalloc_bench_common PUBLIC arenaalloc)
+
+  add_executable(arena_frag_bench bench/frag_bench.cpp)
+  target_link_libraries(arena_frag_bench PRIVATE arenaalloc_bench_common)
+endif()
