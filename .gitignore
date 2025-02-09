@@ -1,0 +1,31 @@
+# CMake build trees
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+compile_commands.json
+
+# Compiled artifacts
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dSYM/
+*.out
+
+# Benchmark output
+*.csv
+perf.data*
+
+# Editors / OS
+.vscode/
+.idea/
+.cache/
+*.swp
+.DS_Store
