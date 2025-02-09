@@ -137,6 +137,22 @@ TEST(HeapDeathTest, DoubleFreeAborts) {
       "double free");
 }
 
+TEST(HeapDeathTest, DoubleFreeAfterBackwardMergeAborts) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(
+      {
+        Heap h;
+        void* a = h.allocate(64);
+        void* b = h.allocate(64);
+        void* guard = h.allocate(64);
+        (void)guard;
+        h.deallocate(a);
+        h.deallocate(b);  // merges back into a, leaving b's header inside the free block
+        h.deallocate(b);
+      },
+      "double free");
+}
+
 TEST(HeapDeathTest, ForeignPointerAborts) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_DEATH(

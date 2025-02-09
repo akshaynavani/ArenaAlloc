@@ -214,6 +214,9 @@ void* Heap::allocate_unlocked(std::size_t n) {
 void Heap::release_block(BlockHeader* b) {
   std::size_t size = block_size(b);
   stats_.in_use_bytes -= size;
+  // Clear INUSE on this header now: if it merges backwards below, the header is left
+  // inside the predecessor's free payload and a second free must still see it as free.
+  b->size_flags &= ~kInUse;
 
   BlockHeader* next = next_block(b);
   if (!is_in_use(next)) {
