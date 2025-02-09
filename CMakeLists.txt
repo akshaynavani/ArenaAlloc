@@ -55,4 +55,7 @@ if(ARENAALLOC_BUILD_BENCH)
 
   add_executable(arena_frag_bench bench/frag_bench.cpp)
   target_link_libraries(arena_frag_bench PRIVATE arenaalloc_bench_common)
+
+  add_executable(arena_throughput_bench bench/throughput_bench.cpp)
+  target_link_libraries(arena_throughput_bench PRIVATE arenaalloc_bench_common)
 endif()
