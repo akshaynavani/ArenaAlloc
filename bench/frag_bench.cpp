@@ -1,8 +1,9 @@
 // Fragmentation / footprint benchmark.
 //
-// Replays one embedded-style trace against one allocator and samples
-//   overhead = 1 - live_requested_bytes / os_footprint
-// every N operations. Run each allocator in its own process (see run_benchmarks.sh)
+// Replays one embedded-style trace against one allocator and samples the OS
+// footprint every N operations. The reported overhead is footprint-weighted:
+//   overhead = sum(footprint - live_requested) / sum(footprint)
+// so moments when the heap is nearly empty don't dominate the average. Run each allocator in its own process (see run_benchmarks.sh)
 // so the system allocator's footprint isn't distorted by anything else.
 //
 //   arena_frag_bench --alloc system|arena [--workload all|sensor|mixed|sawtooth|frames]
@@ -67,7 +68,7 @@ struct Result {
   double seconds = 0;
   std::size_t peak_live = 0;
   std::size_t peak_footprint = 0;
-  double mean_overhead = 0;  // average of 1 - live/footprint across samples
+  double mean_overhead = 0;  // sum(footprint - live) / sum(footprint) over samples
   double peak_ratio = 0;     // peak_footprint / peak_live
   std::size_t failures = 0;
   double arena_ext_frag = -1;  // final-state external fragmentation (arena only)
@@ -84,8 +85,8 @@ Result run(bench::Allocator& alloc, const bench::Trace& trace, const Options& op
   r.ops = trace.ops.size();
 
   std::size_t live = 0;
-  double overhead_sum = 0;
-  std::size_t samples = 0;
+  double wasted_sum = 0;
+  double footprint_sum = 0;
 
   const auto t0 = std::chrono::steady_clock::now();
   for (std::size_t i = 0; i < trace.ops.size(); ++i) {
@@ -114,8 +115,8 @@ Result run(bench::Allocator& alloc, const bench::Trace& trace, const Options& op
       const std::size_t raw = alloc.footprint();
       const std::size_t fp = raw > base ? raw - base : 0;
       if (fp >= live) {
-        overhead_sum += 1.0 - static_cast<double>(live) / static_cast<double>(fp);
-        ++samples;
+        wasted_sum += static_cast<double>(fp - live);
+        footprint_sum += static_cast<double>(fp);
       }
       r.peak_footprint = std::max(r.peak_footprint, fp);
       r.peak_live = std::max(r.peak_live, live);
@@ -124,7 +125,7 @@ Result run(bench::Allocator& alloc, const bench::Trace& trace, const Options& op
   const auto t1 = std::chrono::steady_clock::now();
 
   r.seconds = std::chrono::duration<double>(t1 - t0).count();
-  r.mean_overhead = samples ? overhead_sum / static_cast<double>(samples) : 0.0;
+  r.mean_overhead = footprint_sum > 0 ? wasted_sum / footprint_sum : 0.0;
   r.peak_ratio = r.peak_live ? static_cast<double>(r.peak_footprint) / r.peak_live : 0.0;
   if (auto* a = dynamic_cast<bench::ArenaHeapAllocator*>(&alloc)) {
     r.arena_ext_frag = a->heap().stats().external_fragmentation();
@@ -149,7 +150,8 @@ void print(const Result& r, bool csv, bool header) {
   std::printf("  peak live         %zu KiB\n", r.peak_live / 1024);
   std::printf("  peak footprint    %zu KiB  (%.3fx live)\n", r.peak_footprint / 1024,
               r.peak_ratio);
-  std::printf("  mean overhead     %.2f %%  (1 - live/footprint)\n", r.mean_overhead * 100.0);
+  std::printf("  overhead          %.2f %%  (footprint-weighted, 1 - live/footprint)\n",
+              r.mean_overhead * 100.0);
   if (r.arena_ext_frag >= 0) {
     std::printf("  ext. frag (end)   %.2f %%\n", r.arena_ext_frag * 100.0);
   }
