@@ -30,12 +30,14 @@ done
 # Columns: workload,allocator,ops,seconds,mops,peak_live_kib,peak_footprint_kib,
 #          mean_overhead_pct,peak_ratio,failures
 awk -F, '
-  { key=$1; ovh[key","$2]=$8; peak[key","$2]=$7; mops[key","$2]=$5; seen[key]=1 }
+  { key=$1; ovh[key","$2]=$8; peak[key","$2]=$7; mops[key","$2]=$5; if (!(key in seen)) order[++n]=key; seen[key]=1 }
   END {
     printf "%-10s | %14s %14s | %12s %12s | %10s %10s | %s\n",
       "workload", "sys overhead%", "arena ovh%", "sys peak KiB", "arena peak", "sys Mops", "arena Mops",
       "overhead reduction"
-    for (k in seen) {
+    # Walk workloads in the order they ran; for-in order in awk is unspecified.
+    for (i = 1; i <= n; i++) {
+      k = order[i]
       s = ovh[k",system"]; a = ovh[k",arena"]
       red = (s > 0) ? (s - a) / s * 100 : 0
       printf "%-10s | %14.2f %14.2f | %12d %12d | %10.2f %10.2f | %+.1f%%\n",
